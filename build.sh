@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 APP="TagSync.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-VERSION="1.0"
+VERSION="1.1"
 BUILD="$(mktemp -d)"
 for arch in arm64 x86_64; do
   swiftc -O -parse-as-library -target "$arch-apple-macos14.0" Sources/*.swift -o "$BUILD/TagSync-$arch"

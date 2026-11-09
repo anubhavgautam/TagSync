@@ -61,15 +61,22 @@ enum TagEngine {
 @MainActor
 final class AppModel: ObservableObject {
     private let defaults = UserDefaults.standard
+    private var generation = 0
 
-    @Published var selectedTag: String { didSet { defaults.set(selectedTag, forKey: "selectedTag") } }
-    @Published var jpegFolder: URL? { didSet { defaults.set(jpegFolder?.path, forKey: "jpegFolder"); refreshTags(); clear() } }
-    @Published var rawFolder: URL? { didSet { defaults.set(rawFolder?.path, forKey: "rawFolder"); clear() } }
+    @Published var selectedTag: String {
+        didSet { guard oldValue != selectedTag else { return }; defaults.set(selectedTag, forKey: "selectedTag"); recompute() }
+    }
+    @Published var jpegFolder: URL? {
+        didSet { defaults.set(jpegFolder?.path, forKey: "jpegFolder"); refreshTags(); recompute() }
+    }
+    @Published var rawFolder: URL? {
+        didSet { defaults.set(rawFolder?.path, forKey: "rawFolder"); recompute() }
+    }
     @Published var availableTags: [String] = []
     @Published var matches: [TagEngine.Match] = []
-    @Published var status = ""
+    @Published var taggedJPEGs = 0
     @Published var busy = false
-    @Published var previewed = false
+    @Published var message: String?
 
     init() {
         selectedTag = defaults.string(forKey: "selectedTag") ?? ""
@@ -77,11 +84,11 @@ final class AppModel: ObservableObject {
         if let p = defaults.string(forKey: "jpegFolder"), fm.fileExists(atPath: p) { jpegFolder = URL(fileURLWithPath: p) }
         if let p = defaults.string(forKey: "rawFolder"), fm.fileExists(atPath: p) { rawFolder = URL(fileURLWithPath: p) }
         refreshTags()
+        recompute()
     }
 
-    var pendingCount: Int { matches.filter { !$0.alreadyTagged }.count }
-
-    func clear() { matches = []; previewed = false; status = "" }
+    var pending: [TagEngine.Match] { matches.filter { !$0.alreadyTagged } }
+    var ready: Bool { jpegFolder != nil && rawFolder != nil && !selectedTag.isEmpty }
 
     func refreshTags() {
         let favs = TagEngine.finderFavoriteTags()
@@ -98,160 +105,264 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Live result, Numi-style: re-run the match whenever an input changes.
+    func recompute(keepMessage: Bool = false) {
+        if !keepMessage { message = nil }
+        guard let j = jpegFolder, let r = rawFolder, !selectedTag.isEmpty else {
+            matches = []; taggedJPEGs = 0; return
+        }
+        generation += 1
+        let gen = generation, tag = selectedTag
+        Task.detached(priority: .userInitiated) {
+            let result = TagEngine.findMatches(jpegFolder: j, rawFolder: r, tag: tag)
+            await MainActor.run {
+                guard gen == self.generation else { return }
+                self.matches = result.matches
+                self.taggedJPEGs = result.taggedJPEGs
+            }
+        }
+    }
+
     func pick(raw: Bool) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
         panel.prompt = "Choose"
         panel.message = raw ? "Choose the RAW folder" : "Choose the JPEG folder"
-        if let start = raw ? (rawFolder ?? jpegFolder?.deletingLastPathComponent()) : jpegFolder {
-            panel.directoryURL = start
-        }
+        panel.directoryURL = raw ? (rawFolder ?? jpegFolder?.deletingLastPathComponent()) : jpegFolder
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        if raw { rawFolder = url } else {
-            jpegFolder = url
-            // Convenience: auto-fill a sibling "RAW" folder if there is one.
-            let sibling = url.deletingLastPathComponent().appendingPathComponent("RAW")
-            if rawFolder == nil, FileManager.default.fileExists(atPath: sibling.path) { rawFolder = sibling }
-        }
+        set(url, raw: raw)
     }
 
-    func preview() {
-        guard let j = jpegFolder, let r = rawFolder, !selectedTag.isEmpty else { return }
-        let tag = selectedTag
-        busy = true
-        Task.detached(priority: .userInitiated) {
-            let result = TagEngine.findMatches(jpegFolder: j, rawFolder: r, tag: tag)
-            await MainActor.run {
-                self.matches = result.matches
-                self.previewed = true
-                self.busy = false
-                let already = result.matches.count - self.pendingCount
-                self.status = "\(result.taggedJPEGs) JPEGs tagged “\(tag)” · \(result.matches.count) RAW matches · \(self.pendingCount) to tag"
-                    + (already > 0 ? " · \(already) already tagged" : "")
-            }
-        }
+    func set(_ url: URL, raw: Bool) {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else { return }
+        if raw { rawFolder = url; return }
+        jpegFolder = url
+        // Convenience: auto-fill a sibling "RAW" folder if there is one.
+        let sibling = url.deletingLastPathComponent().appendingPathComponent("RAW")
+        if rawFolder == nil, FileManager.default.fileExists(atPath: sibling.path) { rawFolder = sibling }
     }
 
     func apply() {
         let tag = selectedTag
-        let todo = matches.filter { !$0.alreadyTagged }
-        guard !todo.isEmpty else { return }
+        let todo = pending
+        guard !todo.isEmpty, !busy else { return }
         busy = true
         Task.detached(priority: .userInitiated) {
-            var ok = 0, failed: [String] = []
+            var ok = 0, failed = 0
             for m in todo {
                 var t = TagEngine.tags(of: m.raw)
                 if !t.contains(tag) { t.append(tag) }
-                do { try TagEngine.setTags(t, on: m.raw); ok += 1 }
-                catch { failed.append(m.raw.lastPathComponent) }
+                do { try TagEngine.setTags(t, on: m.raw); ok += 1 } catch { failed += 1 }
             }
-            let j = todo[0].jpeg.deletingLastPathComponent(), r = todo[0].raw.deletingLastPathComponent()
-            let refreshed = TagEngine.findMatches(jpegFolder: j, rawFolder: r, tag: tag)
             let done = ok, errs = failed
             await MainActor.run {
                 self.busy = false
-                self.matches = refreshed.matches
-                self.status = "✓ Tagged \(done) RAW file\(done == 1 ? "" : "s") with “\(tag)”"
-                    + (errs.isEmpty ? "" : " · \(errs.count) failed: \(errs.prefix(5).joined(separator: ", "))")
+                self.message = "✓ tagged \(done)" + (errs > 0 ? " · \(errs) failed" : "")
+                self.recompute(keepMessage: true)
             }
         }
     }
 }
 
+// MARK: - Look
+
+enum Palette {
+    static func dynamic(_ light: UInt32, _ dark: UInt32) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let hex = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+            return NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
+                           blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+        })
+    }
+    static let background = dynamic(0xF7F6F3, 0x1E1E1E)
+    static let text       = dynamic(0x2B2B2B, 0xE6E6E6)
+    static let label      = dynamic(0x9A9894, 0x7C7C7C)
+    static let result     = dynamic(0x3F9C6B, 0x7FCF9B)   // calm green for live values
+    static let accent     = dynamic(0xC84520, 0xF76337)   // Quintessence orange
+    static let rule       = dynamic(0xE6E4DF, 0x2C2C2C)
+}
+
+extension Font {
+    static let sheet = Font.system(size: 15, weight: .regular)
+    static let sheetMono = Font.system(size: 12.5, weight: .regular, design: .monospaced)
+}
+
 // MARK: - UI
 
-struct FolderRow: View {
-    let title: String
-    let url: URL?
-    let action: () -> Void
+/// One "line" of the sheet: quiet label on the left, live value on the right.
+struct SheetLine<Value: View>: View {
+    let label: String
+    @ViewBuilder var value: Value
 
     var body: some View {
-        HStack(spacing: 10) {
-            Text(title).frame(width: 90, alignment: .leading).foregroundStyle(.secondary)
-            HStack {
-                Image(systemName: "folder.fill").foregroundStyle(url == nil ? Color.secondary : Color.accentColor)
-                Text(url?.path(percentEncoded: false) ?? "No folder chosen")
-                    .lineLimit(1).truncationMode(.head)
-                    .foregroundStyle(url == nil ? .secondary : .primary)
-                Spacer()
-            }
-            .padding(.horizontal, 8).padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .controlBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
-            .onTapGesture(perform: action)
-            .help(url?.path ?? "")
-            Button("Choose…", action: action)
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label).foregroundStyle(Palette.label)
+            Spacer(minLength: 0)
+            value
         }
+        .font(.sheet)
+        .frame(height: 26)
+    }
+}
+
+struct FolderLine: View {
+    let label: String
+    let url: URL?
+    let pick: () -> Void
+    let drop: (URL) -> Void
+    @State private var hovering = false
+    @State private var targeted = false
+
+    var body: some View {
+        SheetLine(label: label) {
+            Button(action: pick) {
+                Text(url.map(Self.short) ?? "choose…")
+                    .foregroundStyle(url == nil ? Palette.label : Palette.result)
+                    .underline(hovering, color: Palette.result.opacity(0.4))
+                    .lineLimit(1).truncationMode(.head)
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
+            .help(url?.path ?? "Click or drop a folder")
+        }
+        .padding(.horizontal, 6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Palette.result.opacity(targeted ? 0.12 : 0)))
+        .padding(.horizontal, -6)
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let u = urls.first else { return false }
+            drop(u); return true
+        } isTargeted: { targeted = $0 }
+    }
+
+    /// "…/Shiminami Kaido/JPEG" — the last two path components read best in a narrow window.
+    static func short(_ url: URL) -> String {
+        url.pathComponents.suffix(2).joined(separator: "/")
     }
 }
 
 struct ContentView: View {
     @StateObject private var model = AppModel()
+    static let titleBarHeight: CGFloat = 32
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            FolderRow(title: "JPEG folder", url: model.jpegFolder) { model.pick(raw: false) }
-            FolderRow(title: "RAW folder", url: model.rawFolder) { model.pick(raw: true) }
-
-            HStack(spacing: 10) {
-                Text("Tag").frame(width: 90, alignment: .leading).foregroundStyle(.secondary)
-                Picker("", selection: $model.selectedTag) {
-                    ForEach(model.availableTags, id: \.self) { Text($0).tag($0) }
+        VStack(alignment: .leading, spacing: 0) {
+            FolderLine(label: "jpeg", url: model.jpegFolder, pick: { model.pick(raw: false) },
+                       drop: { model.set($0, raw: false) })
+            FolderLine(label: "raw", url: model.rawFolder, pick: { model.pick(raw: true) },
+                       drop: { model.set($0, raw: true) })
+            SheetLine(label: "tag") {
+                Menu {
+                    ForEach(model.availableTags, id: \.self) { t in
+                        Button(t) { model.selectedTag = t }
+                    }
+                    Divider()
+                    Button("Reload Tags") { model.refreshTags() }
+                } label: {
+                    Text(model.selectedTag.isEmpty ? "choose…" : model.selectedTag)
+                        .font(.sheet)
+                        .foregroundStyle(model.selectedTag.isEmpty ? Palette.label : Palette.result)
                 }
-                .labelsHidden()
-                .onChange(of: model.selectedTag) { model.clear() }
-                Button { model.refreshTags() } label: { Image(systemName: "arrow.clockwise") }
-                    .help("Reload tags")
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
             }
 
-            Divider()
+            Rectangle().fill(Palette.rule).frame(height: 1).padding(.vertical, 8)
 
-            HStack {
-                Button("Preview") { model.preview() }
-                    .keyboardShortcut("p")
-                Button("Apply Tags to RAW") { model.apply() }
-                    .keyboardShortcut(.return)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!model.previewed || model.pendingCount == 0)
-                if model.busy { ProgressView().controlSize(.small) }
+            SheetLine(label: "jpegs tagged") { count(model.taggedJPEGs) }
+            SheetLine(label: "raw matches") { count(model.matches.count) }
+            SheetLine(label: "already tagged") { count(model.matches.count - model.pending.count) }
+
+            fileList
+                .padding(.vertical, 8)
+
+            Rectangle().fill(Palette.rule).frame(height: 1)
+
+            HStack(alignment: .firstTextBaseline) {
+                Text(model.message ?? "to tag")
+                    .font(.sheet)
+                    .foregroundStyle(model.message == nil ? Palette.label : Palette.result)
                 Spacer()
-            }
-            .disabled(model.busy || model.jpegFolder == nil || model.rawFolder == nil || model.selectedTag.isEmpty)
-
-            if !model.status.isEmpty {
-                Text(model.status).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-            }
-
-            List(model.matches, id: \.raw) { m in
-                HStack {
-                    Image(systemName: m.alreadyTagged ? "checkmark.circle.fill" : "circle.dashed")
-                        .foregroundStyle(m.alreadyTagged ? .green : .orange)
-                    Text(m.raw.lastPathComponent).monospaced()
-                    Spacer()
-                    Text(m.alreadyTagged ? "tagged" : "pending").font(.caption).foregroundStyle(.secondary)
+                if model.busy { ProgressView().controlSize(.small).padding(.trailing, 6) }
+                Button(action: model.apply) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("\(model.pending.count)")
+                            .font(.system(size: 26, weight: .medium).monospacedDigit())
+                        Text("↩").font(.system(size: 13, weight: .semibold)).opacity(0.7)
+                    }
+                    .foregroundStyle(model.pending.isEmpty ? Palette.label : Palette.accent)
                 }
-                .contextMenu {
-                    Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([m.raw]) }
-                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.pending.isEmpty || model.busy)
+                .help("Tag \(model.pending.count) RAW file(s) — press Return")
             }
-            .overlay {
-                if model.matches.isEmpty {
-                    Text(model.previewed ? "No matching RAW files" : "Choose folders and a tag, then Preview")
-                        .foregroundStyle(.secondary)
+            .padding(.top, 10)
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 40)        // clears the traffic lights
+        .padding(.bottom, 16)
+        .foregroundStyle(Palette.text)
+        .frame(width: 360, height: 360)
+        .background(Palette.background)
+        .ignoresSafeArea()
+        // The hidden title bar still reserves its height below the safe area; size the
+        // window's content so the whole window (title bar included) is a 360pt square.
+        .frame(width: 360, height: 360 - Self.titleBarHeight, alignment: .bottom)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.recompute(keepMessage: true)   // pick up tags changed in Finder meanwhile
+        }
+    }
+
+    private func count(_ n: Int) -> some View {
+        Text("\(n)").monospacedDigit().foregroundStyle(model.ready ? Palette.result : Palette.label)
+    }
+
+    private var fileList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 3) {
+                ForEach(model.matches, id: \.raw) { m in
+                    HStack {
+                        Text(m.raw.lastPathComponent)
+                        Spacer()
+                        Text(m.alreadyTagged ? "✓" : "+")
+                            .foregroundStyle(m.alreadyTagged ? Palette.result : Palette.accent)
+                    }
+                    .font(.sheetMono)
+                    .foregroundStyle(Palette.label)
+                    .contentShape(Rectangle())
+                    .contextMenu {
+                        Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([m.raw]) }
+                    }
                 }
             }
         }
-        .padding(16)
-        .frame(minWidth: 560, minHeight: 420)
+        .scrollIndicators(.never)
+        .mask(LinearGradient(stops: [.init(color: .black, location: 0.8), .init(color: .clear, location: 1)],
+                             startPoint: .top, endPoint: .bottom))
+        .overlay {
+            if model.matches.isEmpty {
+                Text(model.ready ? "no matching raw files" : "drop folders above")
+                    .font(.sheetMono).foregroundStyle(Palette.label.opacity(0.7))
+            }
+        }
+        .frame(maxHeight: .infinity)
     }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
 @main
 struct TagSyncApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+
     var body: some Scene {
-        WindowGroup("TagSync") { ContentView() }
-            .windowResizability(.contentMinSize)
+        Window("TagSync", id: "main") { ContentView() }
+            .windowStyle(.hiddenTitleBar)
+            .windowResizability(.contentSize)
     }
 }

@@ -12,11 +12,26 @@ Shoot RAW+JPEG, cull and tag the JPEGs in Finder (they preview fast), then let T
 
 ## How it works
 
-1. **Choose the JPEG folder.** If a sibling folder called `RAW` exists, it's filled in automatically.
-2. **Choose the RAW folder** (if it wasn't picked up for you).
-3. **Pick a tag.** The list shows your Finder favourite tags plus any tag already used in the JPEG folder.
-4. **Preview** (⌘P) lists every RAW file whose JPEG carries that tag, marked *pending* or *already tagged*. Nothing is changed yet.
-5. **Apply Tags to RAW** (⌘↩) adds the tag.
+TagSync is a single 360 × 360 window laid out like a calculator sheet: inputs on the left, live results on the right. Results update as soon as any input changes, and again whenever you switch back to the app, so tags you add in Finder show up straight away.
+
+```
+jpeg              Shiminami Kaido/JPEG
+raw                Shiminami Kaido/RAW
+tag                 Photos for Editing
+──────────────────────────────────────
+jpegs tagged                       128
+raw matches                        124
+already tagged                      20
+DSC01234.ARW                         +
+DSC01240.ARW                         ✓
+──────────────────────────────────────
+to tag                           104 ↩
+```
+
+1. **Click `jpeg`** (or drop a folder on it) to choose the JPEG folder. If a sibling folder called `RAW` exists, it's filled in automatically.
+2. **Click `raw`** (or drop a folder on it) if a different RAW folder is needed.
+3. **Click `tag`** to pick from your Finder favourite tags, plus any tag already used in the JPEG folder.
+4. Press **Return** (or click the orange count) to tag the pending RAW files.
 
 Details:
 
@@ -27,6 +42,7 @@ Details:
 - Only the top level of each folder is scanned (subfolders are ignored).
 - Your last folders and tag are remembered between launches.
 - Right-click a file in the list → **Reveal in Finder**.
+- Follows the system light/dark appearance. Closing the window quits the app.
 
 ## Install
 
