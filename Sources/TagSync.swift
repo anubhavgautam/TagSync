@@ -176,20 +176,19 @@ enum Palette {
                            blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
         })
     }
-    static let background = dynamic(0xF7F6F3, 0x1E1E1E)
+    static let background = dynamic(0xFAF8F3, 0x1E1E1E)
     static let text       = dynamic(0x2B2B2B, 0xE6E6E6)
     static let label      = dynamic(0x9A9894, 0x7C7C7C)
     static let result     = dynamic(0x3F9C6B, 0x7FCF9B)   // calm green for live values
     static let accent     = dynamic(0xC84520, 0xF76337)   // Quintessence orange
-    static let rule       = dynamic(0xE6E4DF, 0x2C2C2C)
+    static let rule       = dynamic(0xE9E5DC, 0x2C2C2C)
 }
 
 extension Font {
-    // Numi's look: light Helvetica Neue throughout, with tabular digits so numbers line up.
-    static func numi(_ size: CGFloat) -> Font { .custom("HelveticaNeue-Light", size: size).monospacedDigit() }
-    static let sheet = numi(16)
-    static let sheetSmall = numi(13)
-    static let sheetTotal = numi(30)
+    // JetBrains Mono, bundled in Resources/Fonts and registered via ATSApplicationFontsPath.
+    static let sheet = Font.custom("JetBrainsMono-Light", size: 14)
+    static let sheetSmall = Font.custom("JetBrainsMono-Light", size: 12)
+    static let sheetTotal = Font.custom("JetBrainsMono-Regular", size: 28)
 }
 
 // MARK: - UI
@@ -293,7 +292,7 @@ struct ContentView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text("\(model.pending.count)")
                             .font(.sheetTotal)
-                        Text("↩").font(.sheetSmall).opacity(0.7)
+                        Text("↩").font(.system(size: 14, weight: .medium)).opacity(0.7)
                     }
                     .foregroundStyle(model.pending.isEmpty ? Palette.label : Palette.accent)
                 }
@@ -310,6 +309,7 @@ struct ContentView: View {
         .foregroundStyle(Palette.text)
         .frame(width: 360, height: 360)
         .background(Palette.background)
+        .preferredColorScheme(.light)   // always the off-white sheet, even in dark mode
         .ignoresSafeArea()
         // The hidden title bar still reserves its height below the safe area; size the
         // window's content so the whole window (title bar included) is a 360pt square.

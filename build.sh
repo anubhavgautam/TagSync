@@ -22,6 +22,10 @@ for s in 16 32 128 256 512; do
   sips -z $((s*2)) $((s*2)) "$BUILD/icon.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+
+# Bundled typeface (JetBrains Mono, SIL Open Font License)
+mkdir -p "$APP/Contents/Resources/Fonts"
+cp Assets/Fonts/*.ttf Assets/Fonts/OFL.txt "$APP/Contents/Resources/Fonts/"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -33,6 +37,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>ATSApplicationFontsPath</key><string>Fonts</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>

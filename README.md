@@ -42,7 +42,7 @@ Details:
 - Only the top level of each folder is scanned (subfolders are ignored).
 - Your last folders and tag are remembered between launches.
 - Right-click a file in the list → **Reveal in Finder**.
-- Follows the system light/dark appearance. Closing the window quits the app.
+- Off-white sheet set in JetBrains Mono. Closing the window quits the app.
 
 ## Install
 
@@ -71,6 +71,7 @@ Needs the Xcode command line tools (`xcode-select --install`). No Xcode project 
 ```
 Sources/TagSync.swift     the whole app (SwiftUI)
 Assets/quintessence.svg   icon artwork
+Assets/Fonts/             JetBrains Mono (bundled into the app)
 scripts/make-icon.swift   renders the artwork into the macOS app icon
 build.sh                  compile, bundle, sign (ad-hoc), install, package
 ```
@@ -87,3 +88,7 @@ for jpeg in *.JPG; do
   fi
 done
 ```
+
+## Credits
+
+Typeface: [JetBrains Mono](https://www.jetbrains.com/lp/mono/) by JetBrains, used under the SIL Open Font License 1.1 (`Assets/Fonts/OFL.txt`).
