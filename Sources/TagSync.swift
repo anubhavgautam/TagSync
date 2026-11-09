@@ -185,8 +185,11 @@ enum Palette {
 }
 
 extension Font {
-    static let sheet = Font.system(size: 15, weight: .regular)
-    static let sheetMono = Font.system(size: 12.5, weight: .regular, design: .monospaced)
+    // Numi's look: light Helvetica Neue throughout, with tabular digits so numbers line up.
+    static func numi(_ size: CGFloat) -> Font { .custom("HelveticaNeue-Light", size: size).monospacedDigit() }
+    static let sheet = numi(16)
+    static let sheetSmall = numi(13)
+    static let sheetTotal = numi(30)
 }
 
 // MARK: - UI
@@ -289,8 +292,8 @@ struct ContentView: View {
                 Button(action: model.apply) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text("\(model.pending.count)")
-                            .font(.system(size: 26, weight: .medium).monospacedDigit())
-                        Text("↩").font(.system(size: 13, weight: .semibold)).opacity(0.7)
+                            .font(.sheetTotal)
+                        Text("↩").font(.sheetSmall).opacity(0.7)
                     }
                     .foregroundStyle(model.pending.isEmpty ? Palette.label : Palette.accent)
                 }
@@ -330,7 +333,7 @@ struct ContentView: View {
                         Text(m.alreadyTagged ? "✓" : "+")
                             .foregroundStyle(m.alreadyTagged ? Palette.result : Palette.accent)
                     }
-                    .font(.sheetMono)
+                    .font(.sheetSmall)
                     .foregroundStyle(Palette.label)
                     .contentShape(Rectangle())
                     .contextMenu {
@@ -345,7 +348,7 @@ struct ContentView: View {
         .overlay {
             if model.matches.isEmpty {
                 Text(model.ready ? "no matching raw files" : "drop folders above")
-                    .font(.sheetMono).foregroundStyle(Palette.label.opacity(0.7))
+                    .font(.sheetSmall).foregroundStyle(Palette.label.opacity(0.7))
             }
         }
         .frame(maxHeight: .infinity)
