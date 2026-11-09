@@ -28,6 +28,31 @@ enum TagEngine {
         return names.filter { !$0.isEmpty }
     }
 
+    /// Finder label colour index (0 none, 1 gray, 2 green, 3 purple, 4 blue, 5 yellow, 6 red, 7 orange) per tag.
+    /// There's no public API for this, but macOS fills in each tag's colour when a file is tagged by name,
+    /// so tag a throwaway file and read the stored "name\ncolour" entries back.
+    static func finderColors(for names: [String]) -> [String: Int] {
+        guard !names.isEmpty else { return [:] }
+        let probe = FileManager.default.temporaryDirectory.appendingPathComponent("tagsync-\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: probe.path, contents: nil) else { return [:] }
+        defer { try? FileManager.default.removeItem(at: probe) }
+        guard (try? setTags(names, on: probe)) != nil else { return [:] }
+
+        let attr = "com.apple.metadata:_kMDItemUserTags"
+        let len = getxattr(probe.path, attr, nil, 0, 0, 0)
+        guard len > 0 else { return [:] }
+        var data = Data(count: len)
+        _ = data.withUnsafeMutableBytes { getxattr(probe.path, attr, $0.baseAddress, len, 0, 0) }
+        guard let entries = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String] else { return [:] }
+
+        var colors: [String: Int] = [:]
+        for e in entries {
+            let parts = e.split(separator: "\n", maxSplits: 1)
+            colors[String(parts[0])] = parts.count > 1 ? Int(parts[1]) ?? 0 : 0
+        }
+        return colors
+    }
+
     /// Tags currently used by files in a folder.
     static func tagsUsed(in folder: URL) -> [String] {
         var set = Set<String>()
@@ -73,6 +98,7 @@ final class AppModel: ObservableObject {
         didSet { defaults.set(rawFolder?.path, forKey: "rawFolder"); recompute() }
     }
     @Published var availableTags: [String] = []
+    @Published var tagColors: [String: Int] = [:]
     @Published var matches: [TagEngine.Match] = []
     @Published var taggedJPEGs = 0
     @Published var busy = false
@@ -96,8 +122,10 @@ final class AppModel: ObservableObject {
         Task.detached(priority: .userInitiated) {
             let used = folder.map(TagEngine.tagsUsed) ?? []
             let extra = used.filter { !favs.contains($0) }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            let colors = TagEngine.finderColors(for: favs + extra)
             await MainActor.run {
                 self.availableTags = favs + extra
+                self.tagColors = colors
                 if self.selectedTag.isEmpty || !self.availableTags.contains(self.selectedTag) {
                     self.selectedTag = self.availableTags.first(where: { used.contains($0) }) ?? self.availableTags.first ?? ""
                 }
@@ -184,6 +212,38 @@ enum Palette {
     static let rule       = dynamic(0xE9E5DC, 0x2C2C2C)
 }
 
+/// Finder's tag colours, by label index.
+enum TagColor {
+    static func nsColor(_ index: Int) -> NSColor? {
+        switch index {
+        case 1: .systemGray
+        case 2: .systemGreen
+        case 3: .systemPurple
+        case 4: .systemBlue
+        case 5: .systemYellow
+        case 6: .systemRed
+        case 7: .systemOrange
+        default: nil
+        }
+    }
+
+    /// A Finder-style dot as an NSImage, so it also renders inside native menus.
+    static func dot(_ index: Int, diameter: CGFloat = 10) -> NSImage {
+        let size = NSSize(width: diameter + 2, height: diameter + 2)
+        let image = NSImage(size: size, flipped: false) { rect in
+            let circle = NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1))
+            if let c = nsColor(index) {
+                c.setFill(); circle.fill()
+            } else {   // colourless tag: hollow ring, like Finder
+                NSColor.secondaryLabelColor.setStroke(); circle.lineWidth = 1; circle.stroke()
+            }
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
+}
+
 extension Font {
     // JetBrains Mono, bundled in Resources/Fonts and registered via ATSApplicationFontsPath.
     static let sheet = Font.custom("JetBrainsMono-Light", size: 14)
@@ -257,14 +317,21 @@ struct ContentView: View {
             SheetLine(label: "tag") {
                 Menu {
                     ForEach(model.availableTags, id: \.self) { t in
-                        Button(t) { model.selectedTag = t }
+                        Button { model.selectedTag = t } label: {
+                            Label { Text(t) } icon: { Image(nsImage: TagColor.dot(model.tagColors[t] ?? 0)) }
+                        }
                     }
                     Divider()
                     Button("Reload Tags") { model.refreshTags() }
                 } label: {
-                    Text(model.selectedTag.isEmpty ? "choose…" : model.selectedTag)
-                        .font(.sheet)
-                        .foregroundStyle(model.selectedTag.isEmpty ? Palette.label : Palette.result)
+                    HStack(spacing: 7) {
+                        if !model.selectedTag.isEmpty {
+                            Image(nsImage: TagColor.dot(model.tagColors[model.selectedTag] ?? 0, diameter: 9)).renderingMode(.original)
+                        }
+                        Text(model.selectedTag.isEmpty ? "choose…" : model.selectedTag)
+                            .font(.sheet)
+                            .foregroundStyle(model.selectedTag.isEmpty ? Palette.label : Palette.result)
+                    }
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
